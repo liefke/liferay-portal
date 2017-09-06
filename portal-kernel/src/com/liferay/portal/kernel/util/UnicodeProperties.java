@@ -21,7 +21,7 @@ import com.liferay.portal.kernel.log.LogFactoryUtil;
 
 import java.io.IOException;
 
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.TreeMap;
 
@@ -41,7 +41,7 @@ import java.util.TreeMap;
  *
  * @author Alexander Chow
  */
-public class UnicodeProperties extends HashMap<String, String> {
+public class UnicodeProperties extends LinkedHashMap<String, String> {
 
 	public UnicodeProperties() {
 		_safe = false;
