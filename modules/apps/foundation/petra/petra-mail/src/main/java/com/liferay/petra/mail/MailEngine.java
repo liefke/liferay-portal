@@ -25,10 +25,12 @@ import com.liferay.portal.kernel.io.unsync.UnsyncByteArrayInputStream;
 import com.liferay.portal.kernel.log.Log;
 import com.liferay.portal.kernel.log.LogFactoryUtil;
 import com.liferay.portal.kernel.log.LogUtil;
+import com.liferay.portal.kernel.security.auth.CompanyThreadLocal;
 import com.liferay.portal.kernel.util.ArrayUtil;
 import com.liferay.portal.kernel.util.GetterUtil;
 import com.liferay.portal.kernel.util.InfrastructureUtil;
 import com.liferay.portal.kernel.util.ListUtil;
+import com.liferay.portal.kernel.util.PrefsPropsUtil;
 import com.liferay.portal.kernel.util.PropsKeys;
 import com.liferay.portal.kernel.util.PropsUtil;
 import com.liferay.portal.kernel.util.StringBundler;
@@ -63,6 +65,7 @@ import javax.mail.internet.InternetHeaders;
 import javax.mail.internet.MimeBodyPart;
 import javax.mail.internet.MimeMessage;
 import javax.mail.internet.MimeMultipart;
+import javax.mail.internet.MimePart;
 
 /**
  * @author Brian Wing Shun Chan
@@ -74,6 +77,23 @@ import javax.mail.internet.MimeMultipart;
  * @see    com.liferay.util.mail.MailEngine
  */
 public class MailEngine {
+
+	/**
+	 * Key of a property that indentifies the default content type of mails. The
+	 * possible values are only interesting if {@code htmlFormat} for a mail is
+	 * {@code true}:
+	 * <dl>
+	 * <dt>{@code text/plain}</dt>
+	 * <dd>The content of mails is transformed to plain text</dd>
+	 * <dt>{@code multipart/alternative}</dt>
+	 * <dd>The content of mails is transformed to plain text and both (HTML /
+	 * plain text) are added to a multipart message</dd>
+	 * <dt>all others</dt>
+	 * <dd>The content is send as HTML</dd>
+	 * </dl>
+	 */
+	public static final String DEFAULT_CONTENTTYPE_PROPERTY =
+		"mail.contenttype.default";
 
 	public static Session getSession() {
 		return getSession(false);
@@ -263,7 +283,7 @@ public class MailEngine {
 				session = getSession(smtpAccount);
 			}
 
-			Message message = new LiferayMimeMessage(session);
+			LiferayMimeMessage message = new LiferayMimeMessage(session);
 
 			message.addHeader(
 				"X-Auto-Response-Suppress", "AutoReply, DR, NDR, NRN, OOF, RN");
@@ -290,29 +310,11 @@ public class MailEngine {
 				MimeMultipart rootMultipart = new MimeMultipart(
 					_MULTIPART_TYPE_MIXED);
 
-				MimeMultipart messageMultipart = new MimeMultipart(
-					_MULTIPART_TYPE_ALTERNATIVE);
+				final MimeBodyPart messageBodyPart = new MimeBodyPart();
 
-				MimeBodyPart messageBodyPart = new MimeBodyPart();
-
-				messageBodyPart.setContent(messageMultipart);
+				_setBodyPart(messageBodyPart, body, htmlFormat);
 
 				rootMultipart.addBodyPart(messageBodyPart);
-
-				if (htmlFormat) {
-					MimeBodyPart bodyPart = new MimeBodyPart();
-
-					bodyPart.setContent(body, _TEXT_HTML);
-
-					messageMultipart.addBodyPart(bodyPart);
-				}
-				else {
-					MimeBodyPart bodyPart = new MimeBodyPart();
-
-					bodyPart.setText(body);
-
-					messageMultipart.addBodyPart(bodyPart);
-				}
 
 				for (int i = 0; i < fileAttachments.size(); i++) {
 					FileAttachment fileAttachment = fileAttachments.get(i);
@@ -346,12 +348,7 @@ public class MailEngine {
 				message.saveChanges();
 			}
 			else {
-				if (htmlFormat) {
-					message.setContent(body, _TEXT_HTML);
-				}
-				else {
-					message.setContent(body, _TEXT_PLAIN);
-				}
+				_setBodyPart(message, body, htmlFormat);
 			}
 
 			message.setSentDate(new Date());
@@ -648,15 +645,72 @@ public class MailEngine {
 		}
 	}
 
+	private static void _setBodyPart(
+		final MimePart mimePart, final String body, final boolean htmlFormat)
+		throws MessagingException {
+
+		if (htmlFormat) {
+
+			// Check if we need to convert the body to plain/text
+			// (either in addition to text/html or as a replacement)
+			final String defaultContentType = PrefsPropsUtil.getString(
+				CompanyThreadLocal.getCompanyId(),
+				DEFAULT_CONTENTTYPE_PROPERTY);
+
+			if (_MULTIPART_ALTERNATIVE.equals(defaultContentType)) {
+				final MimeMultipart messageMultipart =
+					new MimeMultipart(_MULTIPART_TYPE_ALTERNATIVE);
+
+				// Add plain text alternative first
+				final MimeBodyPart textPlainPart = new MimeBodyPart();
+
+				textPlainPart.setContent(
+					new HtmlToPlainTextConverter().convert(body),
+					_TEXT_PLAIN_UTF8);
+
+				messageMultipart.addBodyPart(textPlainPart);
+
+				// Now the more specific HTML alternative
+				final MimeBodyPart htmlPart = new MimeBodyPart();
+
+				htmlPart.setContent(body, _TEXT_HTML_UTF8);
+
+				messageMultipart.addBodyPart(htmlPart);
+
+				mimePart.setContent(messageMultipart);
+			}
+			else if (_TEXT_PLAIN.equals(defaultContentType)) {
+				// Add only the plain text alternative
+				mimePart.setContent(
+					new HtmlToPlainTextConverter().convert(body),
+					_TEXT_PLAIN_UTF8);
+			}
+			else {
+				// Add the HTML "as is"
+				mimePart.setContent(body, _TEXT_HTML_UTF8);
+			}
+		}
+		else {
+			// Add the plain text "as is"
+			mimePart.setContent(body, _TEXT_PLAIN_UTF8);
+		}
+	}
+
 	private static final int _BATCH_SIZE = 0;
 
 	private static final String _MULTIPART_TYPE_ALTERNATIVE = "alternative";
 
 	private static final String _MULTIPART_TYPE_MIXED = "mixed";
 
-	private static final String _TEXT_HTML = "text/html;charset=\"UTF-8\"";
+	private static final String _MULTIPART_ALTERNATIVE =
+		"multipart/" + _MULTIPART_TYPE_ALTERNATIVE;
 
-	private static final String _TEXT_PLAIN = "text/plain;charset=\"UTF-8\"";
+	private static final String _TEXT_HTML_UTF8 = "text/html;charset=\"UTF-8\"";
+
+	private static final String _TEXT_PLAIN = "text/plain";
+
+	private static final String _TEXT_PLAIN_UTF8 =
+		_TEXT_PLAIN + ";charset=\"UTF-8\"";
 
 	private static final Log _log = LogFactoryUtil.getLog(MailEngine.class);
 
